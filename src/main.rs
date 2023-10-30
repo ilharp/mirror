@@ -12,7 +12,7 @@ use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use hyper_staticfile::Static;
 use log::{error, info};
 use once_cell::race::OnceBox;
-use reqwest::{get, Url};
+use reqwest::get;
 use serde::Deserialize;
 use tokio::fs::{create_dir_all, read_to_string, remove_file, File};
 use tokio::io;
@@ -227,21 +227,12 @@ async fn sync(mirror: &Mirror) {
 }
 
 async fn sync_intl(mirror: &Mirror) -> Result<()> {
-    let source_url = Url::parse(&mirror.source)?;
-    let source_url_segments = source_url.path_segments();
-    let filename = source_url_segments.iter().last();
-    if let None = filename {
-        return Err(Error::msg(format!(
-            "Cannot parse filename from url: {}",
-            mirror.source
-        )));
-    }
-    let filename: String = filename.unwrap().clone().into_iter().collect();
+    let filename = mirror.name.clone() + ".zip";
     let temp_path = TEMP_PATH.get().unwrap();
     create_dir_all(&temp_path).await?;
     let filepath = Path::new(temp_path).join(&filename);
 
-    let response = get(source_url).await?;
+    let response = get(&mirror.source).await?;
 
     if response.status() != StatusCode::OK {
         return Err(Error::msg(format!(
