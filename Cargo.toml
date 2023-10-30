@@ -12,9 +12,8 @@ env_logger = "*"
 log = { version = "*", features = ["std", "max_level_debug", "release_max_level_debug"] }
 
 hyper = { version = "*", features = ["full"] }
-hyper-tls = "*"
-follow-redirects = "*"
 hyper-staticfile = "*"
+reqwest = "*"
 
 serde = { version = "1", features = ["std", "derive"] }
 serde_yaml = "*"

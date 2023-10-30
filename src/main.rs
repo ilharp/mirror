@@ -8,15 +8,15 @@ use anyhow::{Error, Result};
 use env_logger::Builder;
 use hyper::header;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Client, Method, Request, Response, Server, StatusCode, Uri};
+use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use hyper_staticfile::Static;
-use hyper_tls::HttpsConnector;
 use log::{error, info};
 use once_cell::race::OnceBox;
+use reqwest::{get, Url};
 use serde::Deserialize;
 use tokio::fs::{create_dir_all, read_to_string, remove_file, File};
 use tokio::io;
-use tokio::io::AsyncWriteExt;
+use tokio::io::copy;
 use tokio::signal::ctrl_c;
 use tokio::spawn;
 use tokio_cron_scheduler::{Job, JobScheduler};
@@ -227,21 +227,21 @@ async fn sync(mirror: &Mirror) {
 }
 
 async fn sync_intl(mirror: &Mirror) -> Result<()> {
-    let source_uri: Uri = mirror.source.parse()?;
-    let filename = source_uri.path().split('/').last();
+    let source_url = Url::parse(&mirror.source)?;
+    let source_url_segments = source_url.path_segments();
+    let filename = source_url_segments.iter().last();
     if let None = filename {
         return Err(Error::msg(format!(
             "Cannot parse filename from url: {}",
             mirror.source
         )));
     }
-    let filename = filename.unwrap();
+    let filename: String = filename.unwrap().clone().into_iter().collect();
     let temp_path = TEMP_PATH.get().unwrap();
     create_dir_all(&temp_path).await?;
     let filepath = Path::new(temp_path).join(&filename);
 
-    let client = Client::builder().build::<_, Body>(HttpsConnector::new());
-    let mut response = client.follow_redirects().get(source_uri.clone()).await?;
+    let response = get(source_url).await?;
 
     if response.status() != StatusCode::OK {
         return Err(Error::msg(format!(
@@ -252,13 +252,12 @@ async fn sync_intl(mirror: &Mirror) -> Result<()> {
     }
 
     if let Ok(_) = remove_file(&filepath).await {
-        info!("Older temp file {filename} found. Removed.");
+        info!("Older temp file {} found. Removed.", &filename);
     }
     let mut async_file = File::create(&filepath).await?;
 
-    while let Some(chunk) = response.body_mut().data().await {
-        async_file.write_all(&chunk?).await?;
-    }
+    let content = response.text().await?;
+    copy(&mut content.as_bytes(), &mut async_file).await?;
 
     let data_path = DATA_PATH.get().unwrap();
     let root_path = Path::new(&data_path).join(&mirror.name);
