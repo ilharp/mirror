@@ -77,7 +77,7 @@ async fn main_intl() -> Result<()> {
     let config_path = Path::new(&current_path).join("mirror.yml");
     let try_config_raw = read_to_string(config_path).await;
     let config_raw: OnceBox<String> = OnceBox::new();
-    if let Err(e) = try_config_raw {
+    if let Err(_) = try_config_raw {
         let config_path = Path::new(&current_path).join("config/mirror.yml");
         config_raw
             .set(Box::new(read_to_string(config_path).await?))
