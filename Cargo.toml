@@ -15,6 +15,8 @@ hyper = { version = "0.14", features = ["full"] }
 hyper-staticfile = "*"
 reqwest = { version = "*", features = ["stream"] }
 
+openssl = { version = "0.10", features = ["vendored"] }
+
 serde = { version = "1", features = ["std", "derive"] }
 serde_yaml = "*"
 
