@@ -33,6 +33,7 @@ struct Config {
 struct Mirror {
     name: String,
     source: String,
+    init: Option<bool>,
     sync: Option<String>,
     serve: Option<String>,
 }
@@ -103,8 +104,12 @@ async fn main_intl() -> Result<()> {
         let root_path = Path::new(&data_path).join(&mirror.name);
         create_dir_all(&root_path).await?;
 
-        info!("Initializing first sync for {}", &mirror.name);
-        spawn(sync(&mirror));
+        if let Some(i) = mirror.init {
+            if i {
+                info!("Initializing first sync for {}", &mirror.name);
+                spawn(sync(&mirror));
+            }
+        }
 
         if let Some(cron) = &mirror.sync {
             info!("Initializing sync task for {}", &mirror.name);
