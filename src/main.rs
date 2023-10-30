@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 use anyhow::{Error, Result};
 use env_logger::Builder;
+use futures_util::StreamExt;
 use hyper::header;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
@@ -14,7 +15,7 @@ use log::{error, info};
 use once_cell::race::OnceBox;
 use reqwest::get;
 use serde::Deserialize;
-use tokio::fs::{create_dir_all, read_to_string, remove_file, File};
+use tokio::fs::{create_dir_all, read_to_string, remove_file, OpenOptions};
 use tokio::io;
 use tokio::io::copy;
 use tokio::signal::ctrl_c;
@@ -206,15 +207,17 @@ async fn admin_handler<B>(req: Request<B>) -> Result<Response<Body>, Error> {
     }
     let name = name.unwrap();
 
-    info!("Sync for {name} started as request");
-
     match try_sync_by_name(name).await {
         None => Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body("[MIRROR] not found".into())?),
-        Some(_) => Ok(Response::builder()
-            .status(StatusCode::OK)
-            .body("[MIRROR] sync started".into())?),
+        Some(_) => {
+            info!("Sync for {name} started as request");
+
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body("[MIRROR] sync started".into())?)
+        }
     }
 }
 
@@ -242,13 +245,19 @@ async fn sync_intl(mirror: &Mirror) -> Result<()> {
         )));
     }
 
-    if let Ok(_) = remove_file(&filepath).await {
-        info!("Older temp file {} found. Removed.", &filename);
-    }
-    let mut async_file = File::create(&filepath).await?;
+    let _ = remove_file(&filepath).await;
 
-    let content = response.text().await?;
-    copy(&mut content.as_bytes(), &mut async_file).await?;
+    let mut async_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&filepath)
+        .await?;
+
+    let mut response_data = response.bytes_stream();
+    while let Some(i) = response_data.next().await {
+        copy(&mut i?.as_ref(), &mut async_file).await?;
+    }
 
     let data_path = DATA_PATH.get().unwrap();
     let root_path = Path::new(&data_path).join(&mirror.name);

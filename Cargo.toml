@@ -11,14 +11,15 @@ once_cell = "*"
 env_logger = "*"
 log = { version = "*", features = ["std", "max_level_debug", "release_max_level_debug"] }
 
-hyper = { version = "*", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
 hyper-staticfile = "*"
-reqwest = "*"
+reqwest = { version = "*", features = ["stream"] }
 
 serde = { version = "1", features = ["std", "derive"] }
 serde_yaml = "*"
 
 tokio = { version = "1", features = ["full"] }
 tokio-cron-scheduler = "*"
+futures-util = "*"
 
-zip = { version = "*", default-features = false }
+zip = { version = "*", default-features = false, features = ["deflate"] }
