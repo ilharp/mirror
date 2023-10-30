@@ -50,11 +50,18 @@ jobs:
           sudo apt install gcc-aarch64-linux-gnu
         shell: bash
 
+      - name: Install Toolchain for x86_64-unknown-linux-musl
+        if: matrix.target.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt update
+          sudo apt install musl-tools
+        shell: bash
+
       - name: Install Toolchain for aarch64-unknown-linux-musl
         if: matrix.target.target == 'aarch64-unknown-linux-musl'
         run: |
           sudo apt update
-          sudo apt install gcc-aarch64-linux-gnu
+          sudo apt install gcc-aarch64-linux-gnu musl-tools
         shell: bash
 
       - name: Cache Rust Build Target
