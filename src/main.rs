@@ -6,17 +6,18 @@ use std::str::FromStr;
 
 use anyhow::{Error, Result};
 use env_logger::Builder;
-use hyper::body::HttpBody;
 use hyper::header;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Client, Method, Request, Response, Server, StatusCode, Uri};
 use hyper_staticfile::Static;
+use hyper_tls::HttpsConnector;
 use log::{error, info};
 use once_cell::race::OnceBox;
 use serde::Deserialize;
 use tokio::fs::{create_dir_all, read_to_string, remove_file, File};
 use tokio::io;
 use tokio::io::AsyncWriteExt;
+use tokio::signal::ctrl_c;
 use tokio::spawn;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
@@ -51,7 +52,7 @@ async fn main() {
 
     if let Err(e) = main_intl().await {
         error!("{e}");
-        // println!("\nBacktrace:\n\n{}", e.backtrace());
+        println!("\nBacktrace:\n\n{}", e.backtrace());
         exit(1);
     }
 }
@@ -102,6 +103,9 @@ async fn main_intl() -> Result<()> {
         let root_path = Path::new(&data_path).join(&mirror.name);
         create_dir_all(&root_path).await?;
 
+        info!("Initializing {}", &mirror.name);
+        spawn(sync(&mirror));
+
         if let Some(cron) = &mirror.sync {
             info!("Initializing sync task for {}", &mirror.name);
 
@@ -118,23 +122,34 @@ async fn main_intl() -> Result<()> {
 
             let hyper_static = Static::new(&root_path);
 
-            Server::bind(&SocketAddr::from_str(&*listen)?).serve(make_service_fn(move |_conn| {
-                let hyper_static = hyper_static.clone();
+            spawn(
+                Server::bind(&SocketAddr::from_str(&*listen)?).serve(make_service_fn(
+                    move |_conn| {
+                        let hyper_static = hyper_static.clone();
 
-                ready(Ok::<_, hyper::Error>(service_fn(move |req| {
-                    serve_handler(req, hyper_static.clone())
-                })))
-            }));
+                        ready(Ok::<_, hyper::Error>(service_fn(move |req| {
+                            serve_handler(req, hyper_static.clone())
+                        })))
+                    },
+                )),
+            );
         }
     }
 
     if let Some(server) = &config.admin_server {
         info!("Initializing admin server {}", &server.listen);
 
-        Server::bind(&SocketAddr::from_str(&*server.listen)?).serve(make_service_fn(|_conn| {
-            ready(Ok::<_, hyper::Error>(service_fn(|req| admin_handler(req))))
-        }));
+        spawn(
+            Server::bind(&SocketAddr::from_str(&*server.listen)?).serve(make_service_fn(|_conn| {
+                ready(Ok::<_, hyper::Error>(service_fn(|req| admin_handler(req))))
+            })),
+        );
     }
+
+    scheduler.start().await?;
+
+    ctrl_c().await?;
+    info!("Bye!");
 
     Ok(())
 }
@@ -207,7 +222,7 @@ async fn sync(mirror: &Mirror) {
     if let Err(e) = sync_intl(mirror).await {
         error!("Error when syncing {}", mirror.name);
         error!("{e}");
-        // println!("\nBacktrace:\n\n{}", e.backtrace());
+        println!("\nBacktrace:\n\n{}", e.backtrace());
     }
 }
 
@@ -221,10 +236,20 @@ async fn sync_intl(mirror: &Mirror) -> Result<()> {
         )));
     }
     let filename = filename.unwrap();
-    let filepath = Path::new(TEMP_PATH.get().unwrap()).join(&filename);
+    let temp_path = TEMP_PATH.get().unwrap();
+    create_dir_all(&temp_path).await?;
+    let filepath = Path::new(temp_path).join(&filename);
 
-    let client = Client::new();
-    let mut response = client.get(source_uri.clone()).await?;
+    let client = Client::builder().build::<_, Body>(HttpsConnector::new());
+    let mut response = client.follow_redirects().get(source_uri.clone()).await?;
+
+    if response.status() != StatusCode::OK {
+        return Err(Error::msg(format!(
+            "Sync for {} failed: source response status {}",
+            mirror.name,
+            response.status()
+        )));
+    }
 
     if let Ok(_) = remove_file(&filepath).await {
         info!("Older temp file {filename} found. Removed.");

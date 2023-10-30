@@ -11,7 +11,9 @@ once_cell = "*"
 env_logger = "*"
 log = { version = "*", features = ["std", "max_level_debug", "release_max_level_debug"] }
 
-hyper = { version = "0.14", features = ["full"] }
+hyper = { version = "*", features = ["full"] }
+hyper-tls = "*"
+follow-redirects = "*"
 hyper-staticfile = "*"
 
 serde = { version = "1", features = ["std", "derive"] }
