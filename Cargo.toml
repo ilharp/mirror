@@ -19,3 +19,5 @@ serde_yaml = "*"
 
 tokio = { version = "1", features = ["full"] }
 tokio-cron-scheduler = "*"
+
+zip = { version = "*", default-features = false }
