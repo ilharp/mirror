@@ -1,19 +1,22 @@
-use std::fs::create_dir_all;
 use std::future::ready;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::str::FromStr;
-use std::{fs, io};
 
 use anyhow::{Error, Result};
 use env_logger::Builder;
+use hyper::body::HttpBody;
+use hyper::header;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server};
+use hyper::{Body, Client, Method, Request, Response, Server, StatusCode, Uri};
 use hyper_staticfile::Static;
 use log::{error, info};
 use once_cell::race::OnceBox;
 use serde::Deserialize;
+use tokio::fs::{create_dir_all, read_to_string, remove_file, File};
+use tokio::io;
+use tokio::io::AsyncWriteExt;
 use tokio::spawn;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
@@ -22,7 +25,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Deserialize, Clone, Debug)]
 struct Config {
     mirrors: Vec<Mirror>,
-    admin_servers: Option<Vec<AdminServer>>,
+    admin_server: Option<AdminServer>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -54,14 +57,36 @@ async fn main() {
 }
 
 static GLOBAL_CONFIG: OnceBox<Config> = OnceBox::new();
+static CURRENT_PATH: OnceBox<PathBuf> = OnceBox::new();
+static DATA_PATH: OnceBox<PathBuf> = OnceBox::new();
+static TEMP_PATH: OnceBox<PathBuf> = OnceBox::new();
 
 async fn main_intl() -> Result<()> {
-    let current_path = std::env::current_dir()?;
-    let mut config_path = PathBuf::from(&current_path);
-    config_path.push("mirror.yml");
-    let config_raw = fs::read_to_string(config_path)?;
+    CURRENT_PATH
+        .set(Box::new(std::env::current_dir()?))
+        .unwrap();
+    let current_path = CURRENT_PATH.get().unwrap();
+    DATA_PATH
+        .set(Box::new(Path::new(&current_path).join("data")))
+        .unwrap();
+    let data_path = DATA_PATH.get().unwrap();
+    TEMP_PATH
+        .set(Box::new(Path::new(&current_path).join("tmp")))
+        .unwrap();
+
+    let config_path = Path::new(&current_path).join("mirror.yml");
+    let try_config_raw = read_to_string(config_path).await;
+    let config_raw: OnceBox<String> = OnceBox::new();
+    if let Err(e) = try_config_raw {
+        let config_path = Path::new(&current_path).join("config/mirror.yml");
+        config_raw
+            .set(Box::new(read_to_string(config_path).await?))
+            .unwrap();
+    } else {
+        config_raw.set(Box::new(try_config_raw.unwrap())).unwrap();
+    }
     GLOBAL_CONFIG
-        .set(Box::new(serde_yaml::from_str(&*config_raw)?))
+        .set(Box::new(serde_yaml::from_str(config_raw.get().unwrap())?))
         .unwrap();
     let config = GLOBAL_CONFIG.get().unwrap();
 
@@ -74,16 +99,15 @@ async fn main_intl() -> Result<()> {
     for mirror in &config.mirrors {
         info!("Initializing {}", &mirror.name);
 
-        let mut root_path = PathBuf::from(&current_path);
-        root_path.push("data");
-        root_path.push(&mirror.name);
-        create_dir_all(&root_path)?;
+        let root_path = Path::new(&data_path).join(&mirror.name);
+        create_dir_all(&root_path).await?;
 
         if let Some(cron) = &mirror.sync {
             info!("Initializing sync task for {}", &mirror.name);
 
             scheduler
                 .add(Job::new_async(&*(*cron), move |_uuid, _lock| {
+                    info!("Sync for {} started by cron", mirror.name);
                     Box::pin(sync(&mirror))
                 })?)
                 .await?;
@@ -104,14 +128,12 @@ async fn main_intl() -> Result<()> {
         }
     }
 
-    if let Some(admin_servers) = &config.admin_servers {
-        for server in admin_servers {
-            info!("Initializing admin server {}", &server.listen);
+    if let Some(server) = &config.admin_server {
+        info!("Initializing admin server {}", &server.listen);
 
-            Server::bind(&SocketAddr::from_str(&*server.listen)?).serve(make_service_fn(|_conn| {
-                ready(Ok::<_, hyper::Error>(service_fn(|req| admin_handler(req))))
-            }));
-        }
+        Server::bind(&SocketAddr::from_str(&*server.listen)?).serve(make_service_fn(|_conn| {
+            ready(Ok::<_, hyper::Error>(service_fn(|req| admin_handler(req))))
+        }));
     }
 
     Ok(())
@@ -125,20 +147,103 @@ async fn serve_handler<B>(
 }
 
 async fn admin_handler<B>(req: Request<B>) -> Result<Response<Body>, Error> {
-    // TODO auth
+    let token = &GLOBAL_CONFIG
+        .get()
+        .unwrap()
+        .admin_server
+        .as_ref()
+        .unwrap()
+        .token;
+    let headers = req.headers();
+    match headers.get(header::AUTHORIZATION) {
+        None => {
+            return Ok(Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body("[MIRROR] forbidden".into())?);
+        }
+        Some(auth) => {
+            if String::from("Bearer ") + token != auth.to_str()? {
+                return Ok(Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body("[MIRROR] forbidden".into())?);
+            }
+        }
+    }
 
-    match try_sync_by_name("").await {
+    if req.method() != Method::POST {
+        return Ok(Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body("[MIRROR] method not allowed".into())?);
+    }
+
+    let request_uri = req.uri().path();
+    if !request_uri.starts_with("/sync/") {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body("[MIRROR] not found".into())?);
+    }
+
+    let name = request_uri.strip_prefix("/sync/");
+    if let None = name {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body("[MIRROR] not found".into())?);
+    }
+    let name = name.unwrap();
+
+    info!("Sync for {name} started as request");
+
+    match try_sync_by_name(name).await {
         None => Ok(Response::builder()
-            .status(400)
+            .status(StatusCode::NOT_FOUND)
             .body("[MIRROR] not found".into())?),
         Some(_) => Ok(Response::builder()
-            .status(200)
+            .status(StatusCode::OK)
             .body("[MIRROR] sync started".into())?),
     }
 }
 
 async fn sync(mirror: &Mirror) {
-    // TODO
+    if let Err(e) = sync_intl(mirror).await {
+        error!("Error when syncing {}", mirror.name);
+        error!("{e}");
+        // println!("\nBacktrace:\n\n{}", e.backtrace());
+    }
+}
+
+async fn sync_intl(mirror: &Mirror) -> Result<()> {
+    let source_uri: Uri = mirror.source.parse()?;
+    let filename = source_uri.path().split('/').last();
+    if let None = filename {
+        return Err(Error::msg(format!(
+            "Cannot parse filename from url: {}",
+            mirror.source
+        )));
+    }
+    let filename = filename.unwrap();
+    let filepath = Path::new(TEMP_PATH.get().unwrap()).join(&filename);
+
+    let client = Client::new();
+    let mut response = client.get(source_uri.clone()).await?;
+
+    if let Ok(_) = remove_file(&filepath).await {
+        info!("Older temp file {filename} found. Removed.");
+    }
+    let mut async_file = File::create(&filepath).await?;
+
+    while let Some(chunk) = response.body_mut().data().await {
+        async_file.write_all(&chunk?).await?;
+    }
+
+    let data_path = DATA_PATH.get().unwrap();
+    let root_path = Path::new(&data_path).join(&mirror.name);
+
+    let file = async_file.into_std().await;
+    unzip(file, root_path)?;
+
+    remove_file(filepath).await?;
+
+    Ok(())
 }
 
 async fn try_sync_by_name(name: &str) -> Option<()> {
@@ -155,4 +260,32 @@ async fn try_sync_by_name(name: &str) -> Option<()> {
     spawn(sync(option_mirror.unwrap()));
 
     Some(())
+}
+
+fn unzip(file: std::fs::File, base_path: PathBuf) -> Result<()> {
+    // Use sync operations instead of tokio only in this fn
+    use std::{fs, io};
+
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+
+        let out_path = match file.enclosed_name() {
+            Some(path) => Path::new(&base_path).join(path),
+            None => continue,
+        };
+
+        if (file.name()).ends_with('/') {
+            let _ = fs::create_dir_all(&out_path);
+        } else {
+            if let Some(p) = out_path.parent() {
+                let _ = fs::create_dir_all(p);
+            }
+            let mut outfile = fs::File::create(&out_path)?;
+            io::copy(&mut file, &mut outfile)?;
+        }
+    }
+
+    Ok(())
 }
