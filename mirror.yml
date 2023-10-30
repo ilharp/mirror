@@ -1,0 +1,9 @@
+mirrors: # 镜像列表（必填）
+  - name: koishi # 这个镜像的名称（必填）
+    source: https://ghproxy.com/https://github.com/koishijs/docs/archive/refs/heads/dist.zip # 拉取镜像的地址（必填）
+    serve: 0.0.0.0:9031 # 镜像的监听地址（可不填）
+    init: false # 程序启动时是否先进行一次同步（可不填）
+    sync: 0 0 * * * * # 定时同步设置，此例为在每个 0 点 0 分时同步（每小时同步）（可不填）
+admin_server: # WebHook 服务器，可使用 POST /sync/koishi 加 Bearer token 发起镜像同步请求（可不填）
+  listen: 0.0.0.0:9030 # 监听地址（必填）
+  token: 29ca4080d6bcb01657420ac6129f9f505dc61adb2ccfb4272cd77acaa1a7d365 # 服务 token（必填）
