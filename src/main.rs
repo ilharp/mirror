@@ -15,8 +15,7 @@ use log::{error, info};
 use once_cell::race::OnceBox;
 use reqwest::get;
 use serde::Deserialize;
-use tokio::fs::{create_dir_all, read_to_string, remove_file, OpenOptions};
-use tokio::io;
+use tokio::fs::{create_dir_all, read_to_string, remove_dir_all, remove_file, OpenOptions};
 use tokio::io::copy;
 use tokio::signal::ctrl_c;
 use tokio::spawn;
@@ -104,7 +103,7 @@ async fn main_intl() -> Result<()> {
         let root_path = Path::new(&data_path).join(&mirror.name);
         create_dir_all(&root_path).await?;
 
-        info!("Initializing {}", &mirror.name);
+        info!("Initializing first sync for {}", &mirror.name);
         spawn(sync(&mirror));
 
         if let Some(cron) = &mirror.sync {
@@ -155,11 +154,15 @@ async fn main_intl() -> Result<()> {
     Ok(())
 }
 
-async fn serve_handler<B>(
-    req: Request<B>,
-    hyper_static: Static,
-) -> Result<Response<Body>, io::Error> {
-    hyper_static.serve(req).await
+async fn serve_handler<B>(req: Request<B>, hyper_static: Static) -> Result<Response<Body>, Error> {
+    if req.uri().path() == "/" {
+        Ok(Response::builder()
+            .status(StatusCode::FOUND)
+            .header(header::LOCATION, "/zh-CN")
+            .body(Body::empty())?)
+    } else {
+        Ok(hyper_static.serve(req).await?)
+    }
 }
 
 async fn admin_handler<B>(req: Request<B>) -> Result<Response<Body>, Error> {
@@ -263,6 +266,8 @@ async fn sync_intl(mirror: &Mirror) -> Result<()> {
     let root_path = Path::new(&data_path).join(&mirror.name);
 
     let file = async_file.into_std().await;
+    let _ = remove_dir_all(&root_path).await;
+    create_dir_all(&root_path).await?;
     unzip(file, root_path)?;
 
     remove_file(filepath).await?;
@@ -292,13 +297,26 @@ fn unzip(file: std::fs::File, base_path: PathBuf) -> Result<()> {
 
     let mut archive = zip::ZipArchive::new(file)?;
 
+    let mut prefix = String::new();
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
 
-        let out_path = match file.enclosed_name() {
-            Some(path) => Path::new(&base_path).join(path),
-            None => continue,
-        };
+        let enclosed_name = file.enclosed_name();
+        if let None = enclosed_name {
+            continue;
+        }
+        let enclosed_name = enclosed_name.unwrap();
+        if &prefix == "" && enclosed_name.iter().count() > 1 {
+            if let Some(os_s) = enclosed_name.iter().next() {
+                if let Some(s) = os_s.to_str() {
+                    prefix = String::from(s);
+                }
+            }
+        }
+
+        let out_path = Path::new(&base_path)
+            .join(enclosed_name.strip_prefix(&prefix).unwrap_or(enclosed_name));
 
         if (file.name()).ends_with('/') {
             let _ = fs::create_dir_all(&out_path);
