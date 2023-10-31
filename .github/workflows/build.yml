@@ -76,11 +76,17 @@ jobs:
           cargo build --release --target ${{ matrix.target.target }}
         shell: bash
 
+      - name: Move Executable to Workspace Root
+        run: |
+          mv target/${{ matrix.target.target }}/release/mirror mirror || true
+          mv target/${{ matrix.target.target }}/release/mirror.exe mirror.exe || true
+        shell: bash
+
       - name: Upload Files
         uses: actions/upload-artifact@v3
         with:
           name: mirror-${{ matrix.target.target }}-${{ github.sha }}.zip
           path: |
             mirror.yml
-            target/${{ matrix.target.target }}/release/mirror
-            target/${{ matrix.target.target }}/release/mirror.exe
+            mirror
+            mirror.exe
