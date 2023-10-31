@@ -47,7 +47,7 @@ struct AdminServer {
 
 #[tokio::main]
 async fn main() {
-    set_var("RUST_BACKTRACE", "1");
+    set_var("RUST_BACKTRACE", "full");
 
     let mut log_builder = Builder::new();
     log_builder.filter_level(log::LevelFilter::Info);
