@@ -5,6 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /build
 COPY . /build
 RUN apt update && apt install -y musl-tools
+RUN rustup target add x86_64-unknown-linux-musl
 RUN cargo build --release --target x86_64-unknown-linux-musl
 
 FROM alpine:3.17.2
