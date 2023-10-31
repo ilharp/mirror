@@ -163,14 +163,7 @@ async fn main_intl() -> Result<()> {
 }
 
 async fn serve_handler<B>(req: Request<B>, hyper_static: Static) -> Result<Response<Body>, Error> {
-    if req.uri().path() == "/" {
-        Ok(Response::builder()
-            .status(StatusCode::FOUND)
-            .header(header::LOCATION, "/zh-CN")
-            .body(Body::empty())?)
-    } else {
-        Ok(hyper_static.serve(req).await?)
-    }
+    Ok(hyper_static.serve(req).await?)
 }
 
 async fn admin_handler<B>(req: Request<B>) -> Result<Response<Body>, Error> {
