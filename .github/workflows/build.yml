@@ -73,7 +73,7 @@ jobs:
       - name: Build
         run: |
           rustup target add ${{ matrix.target.target }}
-          cargo build --release --target ${{ matrix.target.target }} -Z unstable-options --out-dir dist
+          cargo build --release --target ${{ matrix.target.target }}
         shell: bash
 
       - name: Upload Files
@@ -81,5 +81,6 @@ jobs:
         with:
           name: mirror-${{ matrix.target.target }}-${{ github.sha }}.zip
           path: |
-            dist/mirror
-            dist/mirror.exe
+            mirror.yml
+            target/${{ matrix.target.target }}/release/mirror
+            target/${{ matrix.target.target }}/release/mirror.exe
